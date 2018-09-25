@@ -1,0 +1,32 @@
+description 'BDIV3 Kernel that supports annotated POJOs and uses byte code manipulation for performance improvements.'
+
+dependencies
+{
+	compile project(':jadex-commons')
+	compile project(':jadex-javaparser')
+	compile project(':jadex-bridge')
+	compile project(':jadex-kernel-base')
+	compile project(':jadex-kernel-component')
+	compile project(':jadex-kernel-micro')
+	compile project(':jadex-rules-eca')
+	compile project(':jadex-xml')
+	
+	compileNoAndroidRuntime 'org.ow2.asm:asm-all:5.0.3'
+//	compile 'org.ow2.asm:asm-all:5.0.3'
+}
+
+task mappings << {
+	conf2ScopeMappings.mappings.each {
+		Conf2ScopeMapping mapping = it.getValue()
+		println "${it.getKey()} -> $mapping.scope"
+		mapping.configuration.allDependencies.each {
+			println it
+		}
+	}
+}
+
+
+//configurations {
+//	compile.extendsFrom compileNoAndroidRuntime
+//	runtime.extendsFrom compileNoAndroidRuntime
+//}

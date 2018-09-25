@@ -1,0 +1,633 @@
+import java.nio.file.Paths
+import java.util.regex.Matcher
+import org.gradle.api.artifacts.ProjectDependency
+
+apply plugin: 'java' // needed for distsDir on root project level
+
+apply from: "$rootDir/src/main/buildutils/versioning.gradle"
+
+def date = new Date()
+def timestamp = date.format('yyyyMMdd.HHmmss')
+
+def maindistsuffix = ''
+gradle.ext.selecteddists.each { dname ->
+	maindistsuffix += '-' + dname
+}
+// resource files that are filtered for variables
+project.ext.filterfiles = '*.xml,*.xsd,*.bat,*.sh,*.txt,*.gradle'
+
+// resource files that are executable and should be flagged as such in the zip, must be subset of filterfiles
+project.ext.execfiles = '*.bat,*.sh'
+
+project.ext.srcdir = 'src'
+
+project.ext.subprojectmap  = new HashMap()
+project.subprojects.each { sp ->
+	addSubproject(sp)
+}
+
+project.ext.jadex_lastbuild_version=jadex_lastbuild_version
+project.ext.timestamp=timestamp
+
+def ENABLE_ECLIPSE_ANDROID_WORKAROUNDS = false
+
+buildscript 
+{
+    repositories
+    {
+        mavenLocal()
+        mavenCentral()
+        jcenter()
+		maven
+		{
+			url "https://maven.google.com"
+		}
+    }
+
+    dependencies
+    {
+        classpath 'com.android.tools.build:gradle:2.3.0'
+		classpath 'com.jfrog.bintray.gradle:gradle-bintray-plugin:1.8.0'
+		classpath 'com.github.dcendents:android-maven-gradle-plugin:1.5'
+		classpath "io.codearte.gradle.nexus:gradle-nexus-staging-plugin:0.11.0" // for nexus-oss auto-close
+    }
+
+    apply from: "$rootDir/src/main/buildutils/util.gradle"
+}
+
+
+
+allprojects
+{
+	version = rootProject.version
+    if(isCommercial(project))
+    {
+	    group = 'com.actoron.jadex'
+	}
+	else
+	{
+	    group = 'org.activecomponents.jadex'
+	}
+
+    repositories
+    {
+        mavenCentral()
+        
+        // public sonatype repository for jmonkey artifacts
+		maven
+		{
+			name 'sonatype public'
+			url 'https://oss.sonatype.org/content/groups/public/'
+		}
+    }
+    
+    buildscript 
+	{
+	    repositories
+	    {
+			mavenLocal()
+	    	mavenCentral()
+	        maven
+			{
+				url "http://nexus.actoron.com/content/repositories/oss-nightlies/"
+			}
+			maven
+			{
+				url "https://maven.google.com"
+			}
+	    }
+	}
+	
+	if (JavaVersion.current().isJava8Compatible()) {
+		tasks.withType(Javadoc) {
+        	options.addStringOption('Xdoclint:none', '-quiet')
+        }
+	}
+}
+
+subprojects
+{
+    def mainSrcDir  = 'src/main/java'
+    def testSrcDir  = 'src/test/java'
+    def junit       = 'junit:junit:4.11'
+    def allSource   = ''
+
+	apply plugin: 'eclipse' // hack to allow starting web projects in eclipse with correct dependencies
+	apply plugin: 'eclipse-wtp' // hack to allow starting web projects in eclipse with correct dependencies
+
+    ext.libraries = [
+            android_support: "com.android.support:support-v4:23.1.0",
+            android_compat: "com.android.support:appcompat-v7:23.1.0",
+            android: 'com.google.android:android:2.2.1',
+            android_test: "com.google.android:android-test:2.2.1",
+            protobuf: "com.google.protobuf:protobuf-java:2.4.1",
+            junit: junit,
+            robotium: 'com.jayway.android.robotium:robotium-solo:3.3',
+            robolectric: 'org.robolectric:robolectric:2.2'
+    ]
+
+	configurations {
+		// compileNoAndroidRuntime will exclude the artifact in Android APKs
+		runtimeAndroid.extendsFrom runtime
+		compileNoAndroidRuntime {
+			dependencies.all { dep ->
+				configurations.runtimeAndroid.exclude group: dep.group, module: dep.name
+			}
+		}
+		compile.extendsFrom compileNoAndroidRuntime
+	}
+
+    if(isAndroidProject(project))
+    {
+		buildscript {
+			dependencies {
+				classpath group: 'org.activecomponents.jadex', name: 'jadex-gradle-plugin',
+						version: "$project.version.major.$project.version.minor.+"
+//				classpath group: 'org.activecomponents.jadex', name: 'jadex-gradle-plugin',
+//						version: "3.0-DEVELOPMENT"
+			}
+		}
+
+		// Disable Android lint nonsense.
+		tasks.whenTaskAdded {task ->
+		    if(task.name.contains("lint")) {
+		        task.enabled = false
+		    }
+		}
+
+	 	if (isAndroidLibraryProject(project))
+        {
+            apply plugin: 'com.android.library'
+        }
+        else
+        {
+            apply plugin: 'com.android.application'
+        }
+
+        if (ENABLE_ECLIPSE_ANDROID_WORKAROUNDS) addEclipseWorkarounds(project)
+
+		// strip "-debug" from .aar and .apks to include them in dist
+		onVariantOutput(project, com.android.builder.core.BuilderConstants.RELEASE) {output ->
+			def fileName = output.outputFile.getName()
+			output.outputFile = new File(output.outputFile.parent, "$archivesBaseName-${version}${fileName.substring(fileName.lastIndexOf("."))}")
+		}
+
+    	android {
+            compileSdkVersion android_compileSdkVersion
+            buildToolsVersion android_buildToolsVersion
+
+            defaultConfig {
+                minSdkVersion android_minSdkVersion
+                targetSdkVersion android_targetSdkVersion
+                versionCode 1
+				versionName jadex_build_version
+            }
+
+            sourceSets {
+                main {
+                    manifest.srcFile 'src/main/AndroidManifest.xml'
+                    resources.srcDirs = [mainSrcDir]
+                    aidl.srcDirs = [mainSrcDir]
+                    res.srcDirs = ['src/main/res']
+                }
+            }
+
+            buildTypes {
+                release {
+                    // runProguard true
+                    // proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
+                }
+            }
+
+            packagingOptions {
+                exclude 'LICENSE.txt'
+                exclude 'META-INF/license.txt'
+                exclude 'META-INF/notice.txt'
+            }
+
+            lintOptions {
+                abortOnError false
+            }
+
+			dexOptions {
+				jumboMode = true
+				javaMaxHeapSize "4g"
+			}
+        }
+
+
+        // include all resources that are placed inside src dirs
+        android.sourceSets.main.resources.srcDirs mainSrcDir
+        android.sourceSets.test.resources.srcDirs testSrcDir
+        allSource   = android.sourceSets.main.java.srcDirs
+        dependencies
+        {
+            testCompile junit
+        }
+
+		configurations {
+			// exclude transitive deps that are not supported on android
+			all {
+				dependencies.all { dep ->
+					excludeNonAndroidRuntime(project, dep)
+				}
+			}
+		}
+    }
+    else
+    {
+		apply plugin: 'java'
+		if (isWebApplicationProject(project)) {
+			apply plugin: 'war'
+			artifacts {
+				archives jar
+			}
+		}
+//			test {
+//				reports.html.enabled = false
+//			}
+//		}
+		test {
+			testLogging {
+				 showStandardStreams = true
+			}
+		}
+
+        compileJava.options.encoding = 'UTF-8'
+        allSource   = sourceSets.main.allSource
+        // include all resources that are placed inside src dirs
+        sourceSets.main.resources.srcDirs    mainSrcDir
+        //sourceSets.main.output.resourcesDir = sourceSets.main.output.classesDir
+        sourceSets.test.resources.srcDirs    testSrcDir
+        //sourceSets.test.output.resourcesDir = sourceSets.test.output.classesDir
+
+        dependencies
+        {
+            testCompile junit
+        }
+
+        processResources {
+			filesMatching('**/version.properties')
+			{
+				filter{String line -> line.replace('${jadex_build_version}', project.version.toString())}
+				filter{String line -> line.replace('${timestamp}', rootProject.timestamp)}
+			}
+		}
+
+        afterEvaluate {
+        	// Set correct bootclasspath for each project, depending on sourceCompatibility
+            setBootClassPath(project)
+			// add scope mappings to include parent configurations in deployed pom.xml
+//			[install, uploadArchives].each { task ->
+//				addParentScopeMappings(task, configurations.compile)
+//			}
+        }
+
+//		test {
+//			reports {
+//				junitXml.enabled = true
+//				html.enabled = true
+//			}
+//		}
+
+    }
+	// needs to be applied after android + java plugins:
+	apply from: "$rootDir/src/main/buildutils/publishing.gradle"
+
+	// process schemas and generate schemadocs
+	if (project.projectDir.toPath().resolve('src/main/schema').toFile().exists()) {
+		addSchemaTasks(project)
+	}
+
+	addJavaDocJarTask(project)
+	addSourcesJarTask(project)
+
+    sourceCompatibility = 1.6
+    
+    if(isTestParallel(project)) {
+		tasks.withType(Test) {
+ 			maxParallelForks = Runtime.runtime.availableProcessors()
+ 		}
+	}
+}
+
+// Hack, helper to generate dep-tree
+task genDepList << {
+
+
+    subprojects
+    {
+		task allDeps(type: DependencyReportTask) {}
+	}
+	def out = new PrintStream(project.projectDir.getCanonicalPath() + '/src/main/buildutils/dependencies.conf', 'UTF-8')
+	project.ext.subprojectmap.entrySet().each { entry ->
+		def sp = entry.getValue()
+		out. println ('### ' + entry.getKey())
+		def founddeps = new HashSet<String>()
+		sp.configurations.each { conf ->
+			conf.getAllDependencies().withType(ProjectDependency).each { dep ->
+				if (!founddeps.contains(dep.getName()))
+					out.println dep.getDependencyProject().getPath()
+				founddeps.add(dep.getName())
+			}
+		}
+	}
+	out.close()
+}
+
+task copyJavaDocSources(type: Copy) {
+	destinationDir = new File(project.distsDir.getCanonicalPath() + '/javadocworkdir')
+	gradle.ext.maindistartifacts.each { artname ->
+		def sp = project.ext.subprojectmap.get(artname)
+		from(sp.projectDir.getCanonicalPath() + '/src/main/java') {
+			include '**/*.java'
+			exclude '**/org/apache/**'
+			exclude '**/impl/**'
+		}
+	}
+	def comment = false
+
+	/* Filter to fix some HTML-entity/Javadoc nonsense */
+	filter { line ->
+		if (line.trim().startsWith('/**'))
+			comment = true
+
+		if (comment) {
+			line = line.replaceAll('(?<!code)>','&gt;')
+			if (line.contains('*/'))
+				comment = false;
+		}
+		return line
+	}
+}
+
+task createVersionInfo(type: Copy) {
+	into project.buildDir.getCanonicalPath()
+	outputs.upToDateWhen {false}
+	from('src/main/buildutils') {
+		include 'jadexversion.properties'
+		expand(SRCDIST_JADEXVERSION: version.toString(), SRCDIST_PATCH_LEVEL: version.patch ?: '')
+	}
+}
+
+task javadocZip(type: Javadoc, dependsOn: [copyJavaDocSources]) {
+	def sourcedir = project.distsDir.getCanonicalPath() + '/javadocworkdir'
+	source(sourcedir)
+	destinationDir = new File(project.distsDir.getCanonicalPath() + '/jadex-' + jadex_build_version + '-javadoc')
+
+	options.encoding 'UTF-8'
+	options.docEncoding 'UTF-8'
+	options.charSet 'UTF-8'
+	options.quiet()
+
+	options.docTitle("Jadex Active Component Platform ${project.version} API")
+	options.windowTitle("Jadex Active Component Platform ${project.version} API")
+	options.group('Core Packages','jadex.commons*:jadex.bridge*')
+	options.group('Micro Agent Packages','jadex.micro*')
+	options.group('BPMN Process Packages','jadex.bpmn*')
+	options.group('BDI Agent Packages','jadex.bdi*')
+	options.group('Web Service Extension Packages','jadex.extension.ws*:jadex.extension.rs*')
+	options.group('2D/3D Environment Extension Packages','')
+	options.group('Agent-Group-Role (AGR) Extension Packages','jadex.extension.agr*')
+
+	doLast {
+		def ant = new groovy.util.AntBuilder()
+		ant.sequential {
+			ant.delete dir: sourcedir
+			ant.zip destfile: destinationDir.getCanonicalPath() + '.zip', {
+				zipfileset dir: destinationDir.getCanonicalPath(), prefix: 'javadoc' + '/', erroronmissingdir: false
+			}
+			ant.delete dir: destinationDir
+		}
+	}
+	outputs.upToDateWhen {false}
+}
+
+task exampleZips {
+	String outputdir = project.distsDir.getCanonicalPath() + '/exampleprojects/'
+	outputs.dir outputdir
+	doLast {
+		def preprocessdirfile = new File(project.distsDir.getCanonicalPath() + '/filteredexampleprojects')
+		def preprocessdir = preprocessdirfile.getCanonicalPath()
+		//String outputdir = project.distsDir.getCanonicalPath() + '/exampleprojects/'
+		String buildExcludes = 'build/**, classes/**, target/**, bin/**, .gradle/**, .idea/**, *.iml'
+		gradle.ext.maindistartifacts.each { artname ->
+			Project sp = project.ext.subprojectmap.get(artname)
+			File exdir = new File(sp.projectDir.getCanonicalPath() + '/dist/exampleprojects')
+			if (exdir.exists() && exdir.isDirectory()) {
+				exdir.listFiles().each { ex ->
+					preprocessdirfile.mkdirs()
+					def ant = new groovy.util.AntBuilder()
+					ant.sequential {
+						ant.copy todir: preprocessdir + '/' + ex.getName(),
+						{
+							resources
+							{
+								fileset dir: ex.getCanonicalPath(), includes: project.ext.filterfiles, erroronmissingdir: false
+							}
+
+							filterset begintoken: '${', endtoken: '}',
+							{
+								filter token: 'jadex_build_version', value: jadex_build_version
+							}
+						}
+						ant.copy todir: preprocessdir + '/' + ex.getName(),
+						{
+							resources
+							{
+								fileset dir: ex.getCanonicalPath(), excludes: project.ext.filterfiles + ', ' + buildExcludes, erroronmissingdir: false
+							}
+						}
+						ant.zip(destfile: outputdir + ex.getName() + '.zip', basedir: preprocessdir, includes: ex.getName() + '/**')
+						ant.delete dir: preprocessdir
+					}
+				}
+			}
+		}
+	}
+}
+
+task srcZip(dependsOn: createVersionInfo) {
+	doLast {
+		createSrcZip(maindistsuffix.substring(1), gradle.ext.maindistartifacts, isAddon(gradle.ext.selecteddists))
+	}
+}
+
+task srcZips(dependsOn: createVersionInfo) {
+	doLast {
+		gradle.ext.selecteddists.each { selecteddist ->
+			def arts = gradle.ext.distartmap.get(selecteddist)
+			createSrcZip(selecteddist, arts, selecteddist.startsWith('addon'))
+		}
+	}
+}
+
+task distZip(dependsOn: [subprojects.build, srcZip, exampleZips]) {
+	description	= "Build a single zip containing modules of all selected distributions. Use '-P dist=<distnames>' to specify distributions (default 'everything'). Available distibutions can be found in the first row of src/main/buildutils/buildconfigs.csv."
+
+	doLast {
+		createDistZip(maindistsuffix.substring(1), gradle.ext.maindistartifacts, isAddon(gradle.ext.selecteddists))
+	}
+}
+
+task distZips(dependsOn: [subprojects.build, srcZips, exampleZips])  {
+	description	= "Build separate zips for all selected distributions. Use '-P dist=<distnames>' to specify distributions (default 'everything'). Available distibutions can be found in the first row of src/main/buildutils/buildconfigs.csv."
+
+	doLast {
+		gradle.ext.selecteddists.each { selecteddist ->
+			def arts = gradle.ext.distartmap.get(selecteddist)
+			createDistZip(selecteddist, arts, selecteddist.startsWith('addon'))
+		}
+	}
+}
+
+def createDistZip(distname, arts, isaddon)
+{
+	def commercial = false
+	arts.each { artname ->
+		commercial |= isCommercial(project.ext.subprojectmap.get(artname))
+	}
+	println 'Distribution "' + distname + '" is ' + (commercial? 'commercial' : 'non-commercial') + ' and ' + (isaddon? 'an add-on.' : 'standalone.')
+
+	def preprocessdirfile = new File(project.distsDir.getCanonicalPath() + '/filtereddistfiles')
+	preprocessdirfile.mkdirs()
+	def preprocessdir = preprocessdirfile.getCanonicalPath()
+	def foldername = 'jadex-'  + jadex_build_version
+	def zipfilename = project.distsDir.getCanonicalPath() + (commercial? '/commercial' : '/noncommercial') + '/' + 'jadex-'  + distname  + '-' + jadex_build_version + '.zip'
+	def distdir = project.distsDir.getCanonicalPath()
+	def ant = new groovy.util.AntBuilder()
+	def extdists = new HashSet()
+
+	ant.sequential {
+		ant.copy todir: preprocessdir,
+		{
+			resources
+			{
+				arts.each { artname ->
+					def sp = project.ext.subprojectmap.get(artname)
+					fileset dir: sp.projectDir.getCanonicalPath() + '/dist/files', includes: project.ext.filterfiles, erroronmissingdir: false
+				}
+			}
+
+			filterset begintoken: '${', endtoken: '}',
+			{
+				filter token: 'jadex_build_version', value: jadex_build_version
+			}
+		}
+		if (isaddon)
+		{
+			ant.copy file: project.distsDir.getCanonicalPath() + '/sources/jadex-'  + distname  + '-' + jadex_build_version + '-sources.zip', tofile: preprocessdir + '/sources-' + distname + '.zip'
+		}
+		else
+		{
+			ant.copy file: project.distsDir.getCanonicalPath() + '/sources/jadex-'  + distname  + '-' + jadex_build_version + '-sources.zip', tofile: preprocessdir + '/sources.zip'
+		}
+		ant.zip destfile: zipfilename,
+		{
+			arts.each { artname ->
+				def sp = project.ext.subprojectmap.get(artname)
+				def spbdir = sp.buildDir.getCanonicalPath()
+
+				if (isAndroidProject(sp)) {
+
+					def targetFolder = '/apps/'
+					if (isAndroidLibraryProject(sp)) {
+						targetFolder = '/lib/'
+						onVariantOutput(sp, com.android.builder.core.BuilderConstants.RELEASE) {output ->
+							zipfileset dir: output.outputFile.getParent(), prefix: foldername + targetFolder, includes:  output.outputFile.getName(), erroronmissingdir: true
+						}
+					} else {
+						// apps as debug version, because unsigned releases to not run on android
+						onVariantOutput(sp, com.android.builder.core.BuilderConstants.DEBUG) {output ->
+							zipfileset dir: output.outputFile.getParent(), prefix: foldername + targetFolder, includes:  output.outputFile.getName(), erroronmissingdir: true
+						}
+					}
+
+				} else {
+					if (isApp(sp)) {
+						zipfileset dir: spbdir + '/libs', prefix: foldername + '/apps/', includes: '*.jar,*.war', excludes: '*-sources.jar,*-javadoc.jar,jadex-distribution-*.jar,*-test.jar', erroronmissingdir: false
+					}
+					else {
+						zipfileset dir: spbdir + '/libs', prefix: foldername + '/lib/', includes: '*.jar', excludes: '*-sources.jar,*-javadoc.jar,jadex-distribution-*.jar,*-test.jar', erroronmissingdir: false
+
+						// copy all runtime deps:
+						def runtimeConfig = sp.configurations.runtime
+						if (distname.contains('android')) {
+							runtimeConfig = sp.configurations.runtimeAndroid
+						}
+
+						def detached = getDetachedConfiguration(sp, runtimeConfig)
+						detached.each { file ->
+							if (!extdists.contains(file)) {
+								zipfileset file: file, prefix: foldername + '/lib/'
+								extdists.add(file)
+							}
+						}
+					}
+				}
+
+				zipfileset dir: sp.projectDir.getCanonicalPath() + '/dist/files', prefix: foldername + '/', excludes: project.ext.filterfiles, erroronmissingdir: false
+
+				def exdir = new File(sp.projectDir.getCanonicalPath() + File.separator + 'dist/exampleprojects')
+				if (exdir.exists() && exdir.isDirectory()) {
+					exdir.listFiles().each { ex ->
+						zipfileset dir: project.distsDir.getCanonicalPath() + '/exampleprojects/', prefix: foldername + '/', includes: ex.getName() + '.zip'
+					}
+				}
+			}
+
+			zipfileset dir: preprocessdir, prefix: foldername + '/', excludes: project.ext.execfiles, erroronmissingdir: false
+			zipfileset dir: preprocessdir, prefix: foldername + '/', includes: project.ext.execfiles, filemode: 755, erroronmissingdir: false
+		}
+		ant.delete dir: preprocessdir
+	}
+}
+
+def createSrcZip(distname, arts, isaddon)
+{
+	def mainzipdir = 'sources/'
+	String maindir = project.projectDir.getCanonicalPath()
+	String zipfilename = project.distsDir.getCanonicalPath() + '/sources/jadex-'  + distname + '-' + jadex_build_version + '-sources.zip'
+	def ant = new groovy.util.AntBuilder()
+	ant.sequential {
+		zip destfile: zipfilename,
+		{
+			arts.each { artname ->
+				Project sp = subprojectmap.get(artname)
+				// each project: sources + resources
+				String prefix = mainzipdir + Paths.get(maindir).relativize(sp.projectDir.toPath()).toString() // handle nested paths correctly
+				zipfileset dir: sp.projectDir.getCanonicalPath() + '/' + srcdir, prefix: prefix +'/' + srcdir,  erroronmissingdir: false
+				// each project: dist directory
+				zipfileset dir: sp.projectDir.getCanonicalPath() + '/dist', prefix: prefix + '/dist',  erroronmissingdir: false, excludes: '**/build/**'
+				// each project: build script files
+				zipfileset dir: sp.projectDir.getCanonicalPath(), prefix: prefix, includes: '*.gradle, *.properties, lib/**',  erroronmissingdir: false
+			}
+			// top-level build script files
+			if (!isaddon) {
+				zipfileset dir: maindir, prefix: mainzipdir, includes: '*.gradle, gradle.properties, gradle/wrapper/*', excludes: '.gradle'
+				zipfileset dir: maindir, prefix: mainzipdir, includes: 'gradlew, gradlew.bat', filemode: 755
+				zipfileset dir: maindir, prefix: mainzipdir, includes: 'src/main/buildutils/**/*', excludes: 'src/main/buildutils/jadexversion.properties'
+				zipfileset dir: maindir, prefix: mainzipdir, includes: 'dependencies.conf'
+				zipfileset dir: project.buildDir.getCanonicalPath(), prefix: mainzipdir + 'src/main/buildutils/', includes: 'jadexversion.properties'
+			}
+		}
+	}
+}
+
+task performanceTest() {
+	description="Execute performance tests. Be sure to call this with a dist that includes some performance tests, such as 'everything'."
+
+	subprojects.findAll { it.getTasksByName('performanceTest', false) }.each {
+		performanceTest.dependsOn += it.performanceTest
+	}
+}
+
+/* Recursively add subprojects */
+def addSubproject(proj)
+{
+	def pname = proj.getPath()
+	project.ext.subprojectmap.put(pname, proj)
+	proj.subprojects.each { sp ->
+		addSubproject(sp)
+	}
+}

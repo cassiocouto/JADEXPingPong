@@ -1,0 +1,6 @@
+description 'The Jadex bpmn applications package contains several example applications, benchmarks and testcases using bpmn workflows.'
+
+dependencies
+{
+	compile project(':jadex-kernel-bpmn')
+}

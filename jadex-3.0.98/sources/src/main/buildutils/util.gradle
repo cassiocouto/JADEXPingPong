@@ -1,0 +1,448 @@
+import groovy.lang.Closure
+import org.gradle.api.internal.artifacts.dependencies.DefaultProjectDependency;
+import org.gradle.api.tasks.compile.GroovyCompile;
+
+def isApp(project) {
+	project.hasProperty('distasapp') && project.property('distasapp').toLowerCase().equals('true')
+}
+
+/* Tests if a project is commercial. */
+def isCommercial(project) {
+	project.hasProperty("commercial") && project.property("commercial").toLowerCase().equals('true')
+}
+
+def isAddon(selecteddists) {
+	def isaddon = true
+	selecteddists.each { dist ->
+		isaddon &= dist.startsWith('addon')
+	}
+	return isaddon
+}
+
+def isAndroidProject(project) {
+    project.hasProperty("androidProject") && project.property("androidProject") == 'true'
+}
+
+def isAndroidLibraryProject(project) {
+    project.hasProperty("androidLibraryProject") && project.property("androidLibraryProject") == 'true'
+}
+
+def isWebApplicationProject(project) {
+    project.hasProperty("webArchiveProject") && project.property("webArchiveProject") == 'true'
+}
+
+def isTestParallel(project) {
+    project.hasProperty("testParallel") && project.property("testParallel") == 'true'
+}
+
+def onVariant(Project project, String variantName, Closure c) {
+    onAllVariants(project) {variant ->
+        if (variant.buildType.name.equals(variantName)) {
+            c(variant)
+        }
+    }
+}
+
+def onAllVariants(Project project, Closure c) {
+    if (isAndroidLibraryProject(project)) {
+        project.android.libraryVariants.all {variant ->
+            c(variant)
+        }
+    } else {
+        project.android.applicationVariants.all {variant ->
+            c(variant)
+        }
+    }
+}
+
+/**
+ * Calls given closure with the output object of the given project.
+ * This ensures that the output is already configured when the callback is called.
+ * @param project
+ * @param c callback
+ * @return void
+ */
+def onVariantOutput(Project project, String variantName, Closure c) {
+    onVariant(project, variantName) { variant ->
+        def output = variant.outputs.find({ o -> o.name.contains(variantName)})
+        c(output)
+    }
+}
+
+def getReleaseVariant(project) {
+    if (isAndroidLibraryProject(project)) {
+        project.android.libraryVariants.all {variant ->
+            if (variant.buildType.name.equals(com.android.builder.core.BuilderConstants.RELEASE)) {
+                return variant
+            }
+        }
+    } else {
+        project.android.applicationVariants.all {variant ->
+            if (variant.buildType.name.equals(com.android.builder.core.BuilderConstants.RELEASE)) {
+                return variant
+            }
+        }
+    }
+}
+
+/**
+ * Recursively check for dependencies with compileNoAndroidRuntime scope and exclude them from the dependency
+ * @param project
+ * @param dep
+ * @param alreadyChecked
+ * @return
+ */
+def excludeNonAndroidRuntime(Project project, Dependency dep, alreadyChecked = [], parentDep = null) {
+    if (parentDep == null) {
+            parentDep = project
+        } else if (parentDep == project) {
+            parentDep = dep
+    }
+        if (dep instanceof DefaultProjectDependency && !alreadyChecked.contains(dep)) {
+            DefaultProjectDependency pdep = dep
+            alreadyChecked.add(pdep)
+            pdep.dependencyProject.configurations.all {
+                dependencies.all { innerDep ->
+                    if (innerDep instanceof DefaultProjectDependency)
+                    {
+                        excludeNonAndroidRuntime(project, innerDep, alreadyChecked, parentDep)
+            }
+        }
+            }
+            pdep.dependencyProject.configurations.compileNoAndroidRuntime {
+                dependencies.all { innerDep ->
+//                    println "excluding $innerDep.group:$innerDep.name, found in $pdep.dependencyProject.name from $project.name"
+//                    project.configurations.default.exclude group: innerDep.group, module: innerDep.name
+//                    project.configurations.compile.exclude group: innerDep.group, module: innerDep.name
+
+                    if (parentDep instanceof DefaultProjectDependency) {
+//                        println "excluding transitive dep: $parentDep.name / $innerDep.group:$innerDep.name in $project.name"
+                        ((DefaultProjectDependency)parentDep).exclude(group: innerDep.group, module: innerDep.name)
+                    }
+                }
+        }
+    }
+
+}
+
+
+/**
+ * Add scope mapping for parent configurations of given configuration.
+ * Maven pom generation does not include inherited configurations by default:
+ * http://gradle.1045684.n5.nabble.com/pom-generation-and-inherited-dependencies-td1436197.html
+ * @param task
+ * @param configuration
+ * @return
+ */
+//def addParentScopeMappings(Task task, Configuration configuration) {
+//    def repos = task.repositories.asList()
+//    if (!repos.empty) {
+//        def scopeMappings = repos[0].pom.scopeMappings
+//        def scope = scopeMappings.getMapping([configuration]).scope
+//        configuration.extendsFrom.each {parentConfiguration ->
+////            println "add mapping for $parentConfiguration"
+//            scopeMappings.addMapping(300, parentConfiguration, scope)
+//        }
+//    }
+//}
+
+/**
+ * Adds schema processing tasks:
+ * 1. Generate schemadocs using XSLT
+ * 2. Copy schemas to build dir and filter schema for version
+ * @param project
+ * @return
+ */
+def addSchemaTasks(Project project) {
+    project.tasks.create('schemadocs').doLast {
+        ant.xslt(
+                basedir: "${project.projectDir}/src/main/schema/",
+                destdir: "${project.buildDir}/schemadocs/",
+//                extension: "-${project.version}.html",
+                extension: ".html",
+                force: "true",
+                style: "${project.rootProject.projectDir}/src/main/buildutils/xs3p.xsl",
+                includes: "*.xsd"
+        )
+    }
+    project.assemble.dependsOn += project.schemadocs
+    project.tasks.create('processSchemas').doLast {
+        ant.copy todir: file("$project.buildDir/tmp/schemas"),
+                {
+                    resources
+                            {
+                                fileset dir: 'src/main/schema', includes: project.rootProject.ext.filterfiles, erroronmissingdir: false
+                            }
+
+                    filterset begintoken: '${', endtoken: '}',
+                            {
+                                filter token: 'jadex_build_version', value: jadex_build_version
+                            }
+                }
+        copy {
+            // rename filtered file to x-3.0-SNAPSHOT
+            from file("$project.buildDir/tmp/schemas")
+            into file("$project.buildDir/schemas")
+            rename '(.+)\\.(.+)', "\$1-$jadex_build_version.\$2"
+        }
+        copy {
+            // copy original unfiltered file and rename to -${jadex_build_version}
+            from file("$project.projectDir/src/main/schema/")
+            into file("$project.buildDir/devschemas")
+            rename '(.+)\\.(.+)', '\$1-\\${jadex_build_version}.\$2'
+        }
+    }
+    project.processSchemas.dependsOn += project.schemadocs
+    project.processResources.dependsOn += project.processSchemas
+}
+
+ext.classPathWarningsShownFor = [:]
+
+/**
+ * Sets the boot classpath according to project.sourceCompatibility.
+ * Needs corresponding JAVA_X_HOME Environment Variable set to the required JDK.
+ * @param project
+ * @return
+ */
+def setBootClassPath(Project project) {
+    def requestedVersion = JavaVersion.toVersion(project.sourceCompatibility)
+    // each JDK should be provided by an environment variable
+    def envHomeVar = "JAVA_${requestedVersion.majorVersion}_HOME"
+    // check if running JDK (which usually is the same Version as in JAVA_HOME) is the requested JDK
+    if (JavaVersion.current() > requestedVersion) {
+        def requestedHome = System.getenv(envHomeVar)
+        if (requestedHome == null || requestedHome.empty || !file(requestedHome).exists()) {
+            if (!classPathWarningsShownFor[project.sourceCompatibility]) {
+                logger.warn("Warning: compiling ${project.sourceCompatibility} source with ${JavaVersion.current()} JDK may lead to problems. " +
+                        "Set $envHomeVar to the corresponding JDK to avoid this.")
+                classPathWarningsShownFor.put(project.sourceCompatibility, true)
+            }
+        } else {
+            // set bootstrap path to correct JDK version
+            // println "Setting bootClasspath for $project.name to JDK $requestedVersion"
+
+            def optionClosure = {
+                // provide same libs that are used in the default boot classpath
+                options.bootClasspath = \
+                            ["resources.jar", "rt.jar", "sunrsasign.jar", "jsse.jar", "jce.jar", "charsets.jar", "jfr.jar"]\
+                            .collect {"$requestedHome"+File.separator+"jre"+File.separator+"lib"+File.separator+"$it"}\
+                            .join(File.pathSeparator) +
+                        ":$requestedHome"+File.separator+"jre"+File.separator+"classes"
+//                        options.fork = true
+            }
+            project.tasks.withType(JavaCompile, optionClosure)
+            project.tasks.withType(GroovyCompile, optionClosure)
+        }
+    }
+}
+
+def getDetachedConfiguration(Project p, Configuration c) {
+    def excludes = []
+    c.allDependencies.findAll {it instanceof ModuleDependency}.each {dep ->
+        dep.getExcludeRules().each {rule ->
+            excludes.add("$rule.group:$rule.module")
+        }
+    }
+    c.getExcludeRules().each {rule ->
+        excludes.add("$rule.group:$rule.module")
+    }
+
+    def detached = p.configurations.detachedConfiguration(c.allDependencies.findAll { !(it instanceof ProjectDependency) && !excludes.contains("$it.group:$it.name") } as Dependency[])
+
+}
+
+//def getSourceDir(project) {
+//    if (isAndroidProject(project)) {
+//        project.android.sourceSets.main.java.srcDirs
+//    } else {
+//        project.sourceSets.main.allJava
+//    }
+//}
+//
+//// only return java sources
+//// (getSourceDir includes xml, bpmn, aidl, ... which is wrong for javadoc generation)
+//def getOnlyJavaSources(project) {
+//    if (isAndroidProject(project)) {
+//    	getReleaseVariant(project).javaCompile.source
+//    } else {
+//        project.sourceSets.main.allJava
+//    }
+//}
+//
+//def getResourcesDir(project) {
+//    if (isAndroidProject(project)) {
+//        project.android.sourceSets.main.res.srcDirs
+//    } else {
+//        project.sourceSets.main.resources
+//    }
+//}
+//
+//def getCompileClassPath(project) {
+//    if (isAndroidProject(project)) {
+//        if (isAndroidLibraryProject(project)) {
+//            project.android.libraryVariants.javaCompile.classpath
+//        } else {
+//            project.android.applicationVariants.javaCompile.classpath
+//        }
+//    } else {
+//        project.sourceSets.main.compileClasspath
+//    }
+//}
+
+//def calledWithTask(fulltaskname)
+//{
+//    def result = gradle.startParameter.taskNames.any {taskName -> taskName.contains(fulltaskname)}
+//    return result
+//}
+
+def androidSdkExists() {
+    def androidHome = System.env.'ANDROID_HOME'
+    if (androidHome != null && !androidHome.isEmpty()) {
+        def adb = new File(androidHome + File.separator + "platform-tools")
+        return adb.exists() && adb.isDirectory();
+    }
+    return false;
+}
+
+/**
+ * Add a javadoc task to the given project.
+ * The output of the javadoc jar will be included in the project artifacts list.
+ * @param p
+ * @return
+ */
+def addJavaDocJarTask(Project p) {
+    if (isAndroidProject(p)) {
+        def javadocsTask = p.tasks.create ('androidjavadocs', Javadoc) {
+            source = p.android.sourceSets.main.java.srcDirs
+            include( "**/*.java" )
+            ext.androidJar = "${p.android.sdkDirectory}/platforms/${p.android.compileSdkVersion}/android.jar"
+            classpath += files(ext.androidJar)
+//                classpath += p.files(p.android.getBootClasspath().join(File.pathSeparator)) // works in some future gradle plugin version
+        }
+
+        p.tasks.create('androidjavadocsJar', Jar) {
+            classifier = 'javadoc'
+            dependsOn javadocsTask
+            from javadocsTask.destinationDir
+        }
+
+    } else {
+        def javadocJar = p.tasks.create('javadocJar', Jar) {
+            classifier = 'javadoc'
+            from p.javadoc
+        }
+        p.artifacts {archives javadocJar}
+    }
+}
+
+/**
+ * Add a sources jar task to the given project.
+ * The output of the sources jar will be included in the project artifacts list.
+ * @param p
+ * @return
+ */
+def addSourcesJarTask(Project p) {
+    if (isAndroidProject(p)) {
+        p.tasks.create('androidsourcesJar', Jar) {
+            classifier = 'sources'
+            from p.android.sourceSets.main.java.srcDirs
+        }
+
+    } else {
+        def sourcesJar = p.tasks.create('sourcesJar', Jar) {
+            classifier = 'sources'
+            from p.sourceSets.main.allSource
+        }
+        p.artifacts {archives sourcesJar}
+    }
+}
+
+def addEclipseWorkarounds(project) {
+	// detached configuration, so this workaround config does not get added to default build process
+	def conf = project.configurations.detachedConfiguration()
+	
+	def dep = project.dependencies.create(fileTree(dir: new File(project.projectDir, '/libs') , include: '*.jar'))
+	conf.dependencies.add(dep)
+	
+	conf.dependencies.add(project.dependencies.create(project.ext.libraries.android))				
+	conf.dependencies.add(project.dependencies.create(project.ext.libraries.android_test))
+	conf.dependencies.add(project.dependencies.create(project.ext.libraries.android_support))
+	conf.dependencies.add(project.dependencies.create(project.ext.libraries.android_compat))
+	
+	project.apply plugin: 'eclipse'
+//	project.apply plugin: 'com.github.ksoichiro.eclipse.aar'
+	
+	project.eclipse {
+		classpath {
+			plusConfigurations += [
+			conf, 
+			project.configurations.compile, 
+			project.configurations.testCompile
+			]
+		}
+	}
+	
+	project.sourceSets {
+		main {
+			java {
+				srcDir 'src/main/java'
+				srcDir 'gen'
+			}
+		}
+		
+		
+		test {
+			java {
+				srcDir 'src/test/java'
+			}
+		}
+	}
+	
+	
+	// Configure eclipse-aar plugin
+//	project.eclipseAar {
+//	    // See "Configurations" for details
+//	    androidTarget = 'android-21'
+//	    aarDependenciesDir = 'aarDependencies'
+//	    // Set to true if you use Andmore. Default is false
+//	    andmore = true
+//	}
+}
+
+
+def getVar(String key, Project p) {
+    String value = System.getenv(key)
+//    print "key: $key, value: $value \n"
+    if (!value || value.isEmpty()) {
+        if (project.hasProperty(key)) {
+            value = project[key]
+        } else {
+            value = null
+        }
+    }
+    return value
+}
+
+// make functions externally visible
+
+ext {
+	isApp = this.&isApp
+	isCommercial = this.&isCommercial
+	isAddon = this.&isAddon
+    isAndroidProject = this.&isAndroidProject
+    isAndroidLibraryProject = this.&isAndroidLibraryProject
+    isWebApplicationProject = this.&isWebApplicationProject
+    isTestParallel = this.&isTestParallel
+    androidSdkExists = this.&androidSdkExists
+    onVariant = this.&onVariant
+    onVariantOutput = this.&onVariantOutput
+    addSchemaTasks = this.&addSchemaTasks
+    setBootClassPath = this.&setBootClassPath
+    excludeNonAndroidRuntime = this.&excludeNonAndroidRuntime
+//    addParentScopeMappings = this.&addParentScopeMappings
+    getDetachedConfiguration = this.&getDetachedConfiguration
+    addJavaDocJarTask = this.&addJavaDocJarTask
+    addSourcesJarTask = this.&addSourcesJarTask
+    addEclipseWorkarounds = this.&addEclipseWorkarounds
+    getVar = this.&getVar
+}

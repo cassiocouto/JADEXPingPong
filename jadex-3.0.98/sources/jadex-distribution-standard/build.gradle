@@ -1,0 +1,19 @@
+description 'The standard distribution of the Jadex middleware including all typical modules such as all standard kernels and tools.'
+
+dependencies
+{
+	compile project(':jadex-distribution-minimal')
+
+	compile project(':jadex-runtimetools-swing')
+	compile project(':jadex-tools-bdi')
+	compile project(':jadex-tools-bpmn')
+	compile project(':jadex-tools-comanalyzer')
+	compile project(':jadex-rules-tools')
+
+	compile project(':jadex-kernel-extension-agr')
+	compile project(':jadex-kernel-extension-envsupport')
+	
+	// excluded?
+//	compile project(':jadex-platform-extension-webservice')
+//	compile project(':jadex-platform-extension-webservice-desktop')
+}

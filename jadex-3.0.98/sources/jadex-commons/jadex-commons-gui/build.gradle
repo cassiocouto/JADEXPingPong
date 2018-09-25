@@ -1,0 +1,6 @@
+description 'Common GUI support classes.'
+
+dependencies
+{
+	compile project(':jadex-commons')
+}

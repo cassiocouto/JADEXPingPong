@@ -1,0 +1,11 @@
+description 'The Jadex kernel extension agr allows for using the agent group role model.'
+
+dependencies
+{
+	compile project(':jadex-commons')
+	compile project(':jadex-bridge')
+	compile project(':jadex-xml')
+	compile project(':jadex-kernel-component')
+	compile project(':jadex-kernel-micro')
+	compile project(':jadex-kernel-application')
+}
