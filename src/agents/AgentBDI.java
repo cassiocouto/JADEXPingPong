@@ -1,20 +1,14 @@
 package agents;
 
-import jadex.bridge.IComponentIdentifier;
-import util.DirectoryFacilitator;
+import jadex.micro.annotation.Agent;
+import jadex.micro.annotation.AgentCreated;
 
+@Agent
 public class AgentBDI {
 
-	protected DirectoryFacilitator df;
-	protected String agentName;
-	
-	protected String setName(String classname, int id) {
-		return classname+"_"+id;
-	}
-
-	protected void registerSelf(String name, IComponentIdentifier identifier) {
-		df = DirectoryFacilitator.getInstance();
-		df.registerAgent(name, identifier);
+	@AgentCreated
+	public void created() {
+		System.out.println("hello");
 	}
 
 }

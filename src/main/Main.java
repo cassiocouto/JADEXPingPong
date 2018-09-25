@@ -21,7 +21,7 @@ public class Main {
 	private static IComponentManagementService cms;
 
 	public static void main(String[] args) {
-		String[] defargs = new String[] { "-gui", "true", "-welcome", "true", "-cli", "false", "-printpass", "false",
+		String[] defargs = new String[] { "-gui", "false", "-welcome", "true", "-cli", "false", "-printpass", "false",
 				"-awareness", "false" };
 		IFuture<IExternalAccess> plataform = jadex.base.Starter.createPlatform(defargs);
 		ThreadSuspendable sus = new ThreadSuspendable();
