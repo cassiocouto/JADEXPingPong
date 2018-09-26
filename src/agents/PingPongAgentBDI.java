@@ -20,11 +20,12 @@ public class PingPongAgentBDI extends AgentBDI {
 	public static final int PONG = 1;
 	protected DirectoryFacilitator df;
 	protected String agentName;
+	protected static int counter = 0;
 
 	@AgentArgument
 	private int type;
 	@AgentArgument
-	private int id;
+	private int index;
 	@AgentFeature
 	private IBDIAgentFeature bdiagent;
 	@Agent
@@ -32,17 +33,18 @@ public class PingPongAgentBDI extends AgentBDI {
 
 	@AgentCreated
 	public void created() {
-		String agentName = type + "_" + id;
+		agentName = createName(this.getClass().getName(), index);
 		registerSelf(agentName, agent.getComponentIdentifier());
-		if (id == 0) {
+		if (index == 0) {
 			IComponentIdentifier id = null;
 			do {
-				id = df.getAgentAID("1_0");
+				id = df.getAgentAID(createName(this.getClass().getName(), 1));
 			} while (id == null);
 			Map<String, Object> ping = new HashMap<String, Object>();
 			ping.put(SFipa.CONTENT, "PING!");
 			ping.put(SFipa.PERFORMATIVE, SFipa.PROPAGATE);
 			ping.put(SFipa.RECEIVERS, new IComponentIdentifier[] { id });
+			ping.put(SFipa.SENDER, id);
 			System.out.println(agentName + ": sending ping!");
 			agent.getComponentFeature(IMessageFeature.class).sendMessage(ping, SFipa.FIPA_MESSAGE_TYPE);
 		}
@@ -54,17 +56,20 @@ public class PingPongAgentBDI extends AgentBDI {
 	}
 
 	@AgentMessageArrived
-	public void msgArrived(Map<String, Object> msg, final MessageType mt) {
-		String perf = (String) msg.get(SFipa.PERFORMATIVE);
-		if ((SFipa.QUERY_IF.equals(perf) || SFipa.QUERY_REF.equals(perf)) && "ping".equals(msg.get(SFipa.CONTENT))) {
-			Map<String, Object> reply = mt.createReply(msg);
-			reply.put(SFipa.CONTENT, agentName + " is alive");
-			reply.put(SFipa.PERFORMATIVE, SFipa.INFORM);
-			reply.put(SFipa.SENDER, agent.getComponentIdentifier());
-			agent.getComponentFeature(IMessageFeature.class).sendMessage(reply, mt);
-		} else {
-			agent.getLogger().severe("Could not process message: " + msg);
+	private void messageArrived(Map<String, Object> msg, MessageType mt) {
+
+		if(counter > 30) {
+			System.out.println("Stopping "+counter);
+			return;
 		}
+		
+		System.out.println(agentName + ": I received \"" + msg.get(SFipa.CONTENT) + "\" from " + msg.get(SFipa.SENDER));
+		Map<String, Object> reply = mt.createReply(msg);
+		reply.put(SFipa.CONTENT, agentName + " is alive "+ (counter++));
+		reply.put(SFipa.PERFORMATIVE, SFipa.INFORM);
+		reply.put(SFipa.SENDER, agent.getComponentIdentifier());
+		agent.getComponentFeature(IMessageFeature.class).sendMessage(reply, mt);
+		return;
 	}
 
 	@Plan(trigger = @Trigger(goals = (Communicate.class)))
@@ -72,7 +77,7 @@ public class PingPongAgentBDI extends AgentBDI {
 
 	}
 
-	protected String setName(String classname, int id) {
+	protected String createName(String classname, int id) {
 		return classname + "_" + id;
 	}
 
